@@ -569,6 +569,18 @@ class WPSDB extends WPSDB_Base {
 			$sql .= $wpdb->prepare( "INSERT INTO `{$_POST['prefix']}options` ( `option_id`, `option_name`, `option_value`, `autoload` ) VALUES ( NULL , %s, %s, %s );\n", $option['option_name'], $option['option_value'], $option['autoload'] );
 		}
 
+		// If type is migrate_widgets then save everything in options table except for anything with widget in `option_name`
+		if( isset( $this->form_data['table_migrate_option'] ) ) {
+			if( $this->form_data['table_migrate_option'] === 'migrate_widgets') {
+				$options_data = $wpdb->get_results( sprintf( "SELECT * FROM %soptions WHERE `option_name` NOT LIKE '%s'", $wpdb->prefix, '%widget%' ), ARRAY_A );
+
+				foreach( $options_data as $option ) {
+					$sql .= $wpdb->prepare( "DELETE FROM `{$_POST['prefix']}options` WHERE `option_name` = %s;\n", $option['option_name'] );
+					$sql .= $wpdb->prepare( "INSERT INTO `{$_POST['prefix']}options` ( `option_id`, `option_name`, `option_value`, `autoload` ) VALUES ( NULL , %s, %s, %s );\n", $option['option_name'], $option['option_value'], $option['autoload'] );
+				}
+			}
+		}
+
 		$alter_table_name = $this->get_alter_table_name();
 		$sql .= $this->get_alter_queries();
 		$sql .= "DROP TABLE IF EXISTS " . $this->backquote( $alter_table_name ) . ";\n";
@@ -787,7 +799,8 @@ class WPSDB extends WPSDB_Base {
 			$result = $this->end_ajax( json_encode(
 				array(
 					'current_row' 		=> $row_information[0],
-					'primary_keys'		=> $row_information[1]
+					'primary_keys'		=> $row_information[1],
+					'data_recevied'		=> $response
 				)
 			) );
 		}

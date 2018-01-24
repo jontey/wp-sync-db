@@ -1006,23 +1006,18 @@ var execute_next_step;
                 progress_size = 0;
                 $('.progress-bar').width('0px');
 
-                if (table_intent == 'migrate_select') {
-                  tables_to_migrate = $('#select-tables').val();
-                  if (migration_intent == 'push' || migration_intent ==
-                    'savefile') {
-                    table_rows = wpsdb_this_table_rows;
-                  } else {
-                    table_rows = connection_data.table_rows;
-                  }
+                // Set default to migrate all
+                if (migration_intent == 'push' || migration_intent == 'savefile') {
+                  tables_to_migrate = wpsdb_this_prefixed_tables;
+                  table_rows = wpsdb_this_table_rows;
                 } else {
-                  if (migration_intent == 'push' || migration_intent ==
-                    'savefile') {
-                    tables_to_migrate = wpsdb_this_prefixed_tables;
-                    table_rows = wpsdb_this_table_rows;
-                  } else {
-                    tables_to_migrate = connection_data.prefixed_tables;
-                    table_rows = connection_data.table_rows;
-                  }
+                  tables_to_migrate = connection_data.prefixed_tables;
+                  table_rows = connection_data.table_rows;
+                }
+
+                // Update tables_to_migrate as necessary
+                if (table_intent == 'migrate_select' || table_intent == 'migrate_widgets') {
+                  tables_to_migrate = $('#select-tables').val();
                 }
 
                 $('.progress-tables').empty();
@@ -1739,8 +1734,11 @@ var execute_next_step;
 
     // show / hide table select box when specific settings change
     $('input.multiselect-toggle').change(function() {
-      // Only show when migrate selected is checked. Hide otherwise
-      $(this).parents('.expandable-content').children('.select-wrap').toggle($(this).is('#migrate-selected') && $(this).is(':checked'));
+      // Show when migrate selected or migrate widgets is checked. Hide otherwise
+      $(this).parents('.expandable-content').children('.select-wrap').toggle($(this).is('.show-multiselect') && $(this).is(':checked'));
+      if($(this).is('#migrate-widgets') && $(this).is(':checked')) {
+        $('#select-tables').val(wpsdb_this_prefix+ 'options');
+      }
     });
 
     $('.show-multiselect').each(function() {
