@@ -250,6 +250,12 @@ $loaded_profile = wp_parse_args( $loaded_profile, $this->checkbox_options );
 							<?php _e( 'Migrate only selected tables below', 'wp-sync-db' ); ?>
 							</label>
 						</li>
+						<li>
+							<label for="migrate-widgets">
+							<input id="migrate-widgets" class="multiselect-toggle" type="radio" value="migrate_widgets" name="table_migrate_option"<?php echo ( $loaded_profile['table_migrate_option'] == 'migrate_widgets' ? ' checked="checked"' : '' ); ?> />
+							<?php _e( 'Migrate only widgets', 'wp-sync-db' ); ?>
+							</label>
+						</li>
 					</ul>
 
 					<div class="select-tables-wrap select-wrap">
