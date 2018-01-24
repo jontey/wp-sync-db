@@ -799,8 +799,7 @@ class WPSDB extends WPSDB_Base {
 			$result = $this->end_ajax( json_encode(
 				array(
 					'current_row' 		=> $row_information[0],
-					'primary_keys'		=> $row_information[1],
-					'data_recevied'		=> $response
+					'primary_keys'		=> $row_information[1]
 				)
 			) );
 		}
