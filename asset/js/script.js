@@ -1739,7 +1739,8 @@ var execute_next_step;
 
     // show / hide table select box when specific settings change
     $('input.multiselect-toggle').change(function() {
-      $(this).parents('.expandable-content').children('.select-wrap').toggle();
+      // Only show when migrate selected is checked. Hide otherwise
+      $(this).parents('.expandable-content').children('.select-wrap').toggle($(this).is('#migrate-selected') && $(this).is(':checked'));
     });
 
     $('.show-multiselect').each(function() {
