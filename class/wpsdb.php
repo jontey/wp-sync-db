@@ -569,18 +569,6 @@ class WPSDB extends WPSDB_Base {
 			$sql .= $wpdb->prepare( "INSERT INTO `{$_POST['prefix']}options` ( `option_id`, `option_name`, `option_value`, `autoload` ) VALUES ( NULL , %s, %s, %s );\n", $option['option_name'], $option['option_value'], $option['autoload'] );
 		}
 
-		// If type is migrate_widgets then save everything in options table except for anything with widget in `option_name`
-		if( isset( $this->form_data['table_migrate_option'] ) ) {
-			if( $this->form_data['table_migrate_option'] === 'migrate_widgets') {
-				$options_data = $wpdb->get_results( sprintf( "SELECT * FROM %soptions WHERE `option_name` NOT LIKE '%s'", $wpdb->prefix, '%widget%' ), ARRAY_A );
-
-				foreach( $options_data as $option ) {
-					$sql .= $wpdb->prepare( "DELETE FROM `{$_POST['prefix']}options` WHERE `option_name` = %s;\n", $option['option_name'] );
-					$sql .= $wpdb->prepare( "INSERT INTO `{$_POST['prefix']}options` ( `option_id`, `option_name`, `option_value`, `autoload` ) VALUES ( NULL , %s, %s, %s );\n", $option['option_name'], $option['option_value'], $option['autoload'] );
-				}
-			}
-		}
-
 		$alter_table_name = $this->get_alter_table_name();
 		$sql .= $this->get_alter_queries();
 		$sql .= "DROP TABLE IF EXISTS " . $this->backquote( $alter_table_name ) . ";\n";
@@ -736,7 +724,14 @@ class WPSDB extends WPSDB_Base {
 			if ( $_POST['intent'] == 'savefile' ) {
 				$this->fp = $this->open( $sql_dump_file_name );
 			}
-			$result = $this->export_table( $_POST['table'] );
+
+			// Handle widgets sync differently
+			if ($this->form_data['table_migrate_option'] === 'migrate_widgets'){
+				$result = $this->export_widgets($_POST['table']);
+			} else {
+				$result = $this->export_table( $_POST['table'] );
+			}
+
 			if ( $_POST['intent'] == 'savefile' ) {
 				$this->close( $this->fp );
 			}
@@ -871,7 +866,14 @@ class WPSDB extends WPSDB_Base {
 		}
 
 		$this->maximum_chunk_size = $_POST['pull_limit'];
-		$this->export_table( $_POST['table'] );
+
+		// Handle widgets sync differently
+		if ($this->form_data['table_migrate_option'] === 'migrate_widgets'){
+			$this->export_widgets( $_POST['table'] );
+		} else {
+			$this->export_table( $_POST['table'] );
+		}
+
 		ob_start();
 		$this->display_errors();
 		$return = ob_get_clean();
@@ -1530,6 +1532,194 @@ class WPSDB extends WPSDB_Base {
 			}
 		}
 		return $create_query;
+	}
+
+	/**
+	 * Simple function to export SQL to update widgets
+	 * in `wp_options` table
+	 * @return [type] [description]
+	 */
+	function export_widgets( $table) {
+		if ( $this->table_is( 'options', $table ) ) {
+			$temp_prefix = $this->temp_prefix;
+			$remote_prefix = ( isset( $_POST['prefix'] ) ? $_POST['prefix'] : $wpdb->prefix );
+
+			$table_structure = $wpdb->get_results( "DESCRIBE " . $this->backquote( $table ) );
+			if ( ! $table_structure ) {
+				$this->error = __( 'Failed to retrieve table structure, please ensure your database is online. (#125)', 'wp-sync-db' );
+				return false;
+			}
+
+			$current_row = -1;
+			if ( ! empty( $_POST['current_row'] ) ) {
+				$temp_current_row = trim( $_POST['current_row'] );
+				if ( ! empty( $temp_current_row ) ) {
+					$current_row = (int) $temp_current_row;
+				}
+			}
+
+			// Batch by $row_inc
+
+			$row_inc = $this->rows_per_segment;
+			$row_start = 0;
+			if ( $current_row != -1 ) {
+				$row_start = $current_row;
+			}
+
+			// $defs = mysql defaults, looks up the default for that paricular column, used later on to prevent empty inserts values for that column
+			// $ints = holds a list of the possible integar types so as to not wrap them in quotation marks later in the insert statements
+			$defs = array();
+			$ints = array();
+			foreach ( $table_structure as $struct ) {
+				if ( ( 0 === strpos( $struct->Type, 'tinyint' ) ) ||
+					( 0 === strpos( strtolower( $struct->Type ), 'smallint' ) ) ||
+					( 0 === strpos( strtolower( $struct->Type ), 'mediumint' ) ) ||
+					( 0 === strpos( strtolower( $struct->Type ), 'int' ) ) ||
+					( 0 === strpos( strtolower( $struct->Type ), 'bigint' ) ) ) {
+					$defs[strtolower( $struct->Field )] = ( null === $struct->Default ) ? 'NULL' : $struct->Default;
+					$ints[strtolower( $struct->Field )] = "1";
+				}
+			}
+
+			$this->row_tracker = $row_start;
+
+			$table_name = $table;
+
+			// if ( $this->form_data['action'] != 'savefile' && $_POST['stage'] != 'backup' ) {
+			// 	$table_name = $prefix . $table;
+			// }
+
+			$this->primary_keys = array();
+			$use_primary_keys = true;
+			foreach( $table_structure as $col ){
+				$field_set[] = $this->backquote( $col->Field );
+				if( $col->Key == 'PRI' && true == $use_primary_keys ) {
+					if( false === strpos( $col->Type, 'int' ) ) {
+						$use_primary_keys = false;
+						$this->primary_keys = array();
+						continue;
+					}
+					$this->primary_keys[$col->Field] = 0;
+				}
+			}
+
+			$fields = implode( ', ', $field_set );
+
+			// Run delete command first, then inserts
+			$delete_sql = "DELETE FROM " . $this->backquote( $table_name ) . " WHERE `option_name` LIKE '%widget%'";
+			$this->stow( $delete_sql );
+
+			$insert_buffer = $insert_query_template = "INSERT INTO " . $this->backquote( $table_name ) . " ( " . $fields . ") VALUES\n";
+
+			do {
+				// SQL to grab relevant rows
+				$join = array();
+				$where = 'WHERE 1=1';
+				$order_by = '';
+				$limit = "LIMIT {$row_start}, {$row_inc}";
+
+				// Limit to widgets
+				$where .= " AND `option_name` LIKE '%widget%'";
+
+				if( ! empty( $this->primary_keys ) ) {
+					$primary_keys_keys = array_keys( $this->primary_keys );
+					$primary_keys_keys = array_map( array( $this, 'backquote' ), $primary_keys_keys );
+
+					$order_by = 'ORDER BY ' . implode( ',', $primary_keys_keys );
+				}
+
+				$join = implode( ' ', array_unique( $join ) );
+				$join = apply_filters( 'wpsdb_rows_join', $join, $table );
+				$where = apply_filters( 'wpsdb_rows_where', $where, $table );
+				$order_by = apply_filters( 'wpsdb_rows_order_by', $order_by, $table );
+				$limit = apply_filters( 'wpsdb_rows_limit', $limit, $table );
+
+				$sql = "SELECT " . $this->backquote( $table ) . ".* FROM " . $this->backquote( $table ) . " $where $order_by $limit";
+
+				$sql = apply_filters( 'wpsdb_rows_sql', $sql, $table );
+
+				// Start sending data across
+				$table_data = $wpdb->get_results( $sql );
+				if ( $table_data ) {
+					foreach ( $table_data as $row ) {
+						$values = array();
+						foreach ( $row as $key => $value ) {
+							if ( isset( $ints[strtolower( $key )] ) && $ints[strtolower( $key )] ) {
+								// make sure there are no blank spots in the insert syntax,
+								// yet try to avoid quotation marks around integers
+								$value = ( null === $value || '' === $value ) ? $defs[strtolower( $key )] : $value;
+								$values[] = ( '' === $value ) ? "''" : $value;
+							} else {
+								if ( $key === 'option_id' ) {
+									$value = null;
+								}
+								if ( null === $value ) {
+									$values[] = 'NULL';
+								}
+								else {
+									$value = $this->recursive_unserialize_replace( $value, true, true );
+									$values[] = "'" . str_replace( $search, $replace, $this->sql_addslashes( $value ) ) . "'";
+								}
+							}
+						}
+						$insert_line = '(' . implode( ', ', $values ) . '),';
+						$insert_line .= "\n";
+
+						if ( ( strlen( $this->current_chunk ) + strlen( $insert_line ) + strlen( $insert_buffer ) + 10 ) > $this->maximum_chunk_size ) {
+							if( $insert_buffer == $insert_query_template ) {
+								$insert_buffer .= $insert_line;
+
+								++$this->row_tracker;
+
+								if( ! empty( $this->primary_keys ) ) {
+									foreach( $this->primary_keys as $primary_key => $value ) {
+										$this->primary_keys[$primary_key] = $row->$primary_key;
+									}
+								}
+							}
+							$insert_buffer = rtrim( $insert_buffer, "\n," );
+							$insert_buffer .= " ;\n";
+							$this->stow( $insert_buffer );
+							$insert_buffer = $insert_query_template;
+							$query_size = 0;
+							return $this->transfer_chunk();
+						}
+
+						if ( ( $query_size + strlen( $insert_line ) ) > $this->max_insert_string_len && $insert_buffer != $insert_query_template ) {
+							$insert_buffer = rtrim( $insert_buffer, "\n," );
+							$insert_buffer .= " ;\n";
+							$this->stow( $insert_buffer );
+							$insert_buffer = $insert_query_template;
+							$query_size = 0;
+						}
+
+						$insert_buffer .= $insert_line;
+						$query_size += strlen( $insert_line );
+
+						++$this->row_tracker;
+
+						if( ! empty( $this->primary_keys ) ) {
+							foreach( $this->primary_keys as $primary_key => $value ) {
+								$this->primary_keys[$primary_key] = $row->$primary_key;
+							}
+						}
+					}
+					$row_start += $row_inc;
+
+					if ( $insert_buffer != $insert_query_template ) {
+						$insert_buffer = rtrim( $insert_buffer, "\n," );
+						$insert_buffer .= " ;\n";
+						$this->stow( $insert_buffer );
+						$insert_buffer = $insert_query_template;
+						$query_size = 0;
+					}
+				}
+			} while ( count( $table_data ) > 0 );
+		}
+
+		// Done here :)
+		$this->row_tracker = -1;
+		return $this->transfer_chunk();
 	}
 
 	/**
